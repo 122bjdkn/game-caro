@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Game Cờ Caro</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
+  <style>
+    .win-message {
+      font-size: 30px;
+      font-weight: bold;
+      color: gold;
+      text-shadow: 0 0 10px red, 0 0 20px orange, 0 0 30px yellow, 0 0 40px red;
+      animation: firework 2s ease-in-out infinite;
+    }
+    @keyframes firework {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.2); opacity: 0.5; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .dice-container {
+      display: flex;
+      justify-content: center;
+      position: absolute;
+      top: 100px;
+      transform-style: preserve-3d;
+      perspective: 1000px;
+      transition: transform 1.5s ease;
+    }
+    .dice {
+      font-size: 50px;
+      margin: 10px;
+      width: 80px;
+      height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: #f0f0f0;
+      border-radius: 8px;
+      border: 2px solid #ccc;
+      animation: rollDice 1.5s linear infinite;
+    }
+    @keyframes rollDice {
+      0% { transform: rotate(0deg); }
+      25% { transform: rotate(90deg); }
+      50% { transform: rotate(180deg); }
+      75% { transform: rotate(270deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .dice-fall {
+      transform: translateY(300px);
+      animation: none;
+    }
+    .clap {
+      font-size: 40px;
+      color: green;
+      animation: clapEffect 1s ease-in-out infinite;
+    }
+    @keyframes clapEffect {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); }
+    }
+  </style>
+</head>
+<body>
+  <h1>🎮 Game Cờ Caro</h1>
+  <div id="auth-container">
+    <input type="text" id="username" placeholder="Tên người chơi">
+    <input type="email" id="email" placeholder="Email">
+    <input type="password" id="password" placeholder="Mật khẩu">
+    <button onclick="signUp()">Đăng ký</button>
+    <button onclick="signIn()">Đăng nhập</button>
+    <p id="auth-status"></p>
+  </div>
+  <div id="room-container" style="display: none;">
+    <h2>🎲 Chế độ phòng</h2>
+    <button id="play-vs-bot-btn">🎮 Chơi với máy</button>
+    <button onclick="createRoom()">🔐 Tạo phòng</button>
+    <p id="room-code-display"></p>
+    <input type="text" id="join-room-code" placeholder="Nhập mã phòng">
+    <button onclick="joinRoom()">🔑 Tham gia phòng</button>
+    <div id="waiting-player" style="margin-top:10px;"></div>
+    <button id="start-game-btn" onclick="startGame()" style="display:none;">🚀 Bắt đầu chơi</button>
+  </div>
+  <div id="game-container" style="display:none;">
+    <div id="status">
+      Người chơi: <span id="player">X</span> | Tỉ số: <span id="score">X - 0 | O - 0</span>
+      Tên: <span id="player-name">Đang tải...</span>
+    </div>
+    <div id="board" class="board"></div>
+    <button onclick="resetGame()">🔁 Chơi lại</button>
+    <button onclick="signOut()">🚪 Đăng xuất</button>
+    <button onclick="exitToRoomSelection()">🏠 Thoát</button>
+    <p id="win-message" style="display:none;" class="win-message"></p>
+    <div id="clap-message" class="clap" style="display:none;">👏👏👏</div>
+    <div id="dice-container" class="dice-container" style="display:none;">
+      <div id="dice1" class="dice">🎲</div>
+      <div id="dice2" class="dice">🎲</div>
+    </div>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyCFIifvlouwIKV4m3gtZSnAVMx8KC9k1TE",
+      authDomain: "carogame-ce9f5.firebaseapp.com",
+      databaseURL: "https://carogame-ce9f5-default-rtdb.firebaseio.com",
+      projectId: "carogame-ce9f5",
+      storageBucket: "carogame-ce9f5.firebasestorage.app",
+      messagingSenderId: "694853754232",
+      appId: "1:694853754232:web:22d3ad772a20093189fc8d",
+      measurementId: "G-PJC6361WSJ"
+    };
+    firebase.initializeApp(firebaseConfig);
+
+    const auth = firebase.auth();
+    const database = firebase.database();
+    let currentPlayer = "X";
+    let boardState = Array(15).fill().map(() => Array(15).fill(""));
+    let winCounts = { X: 0, O: 0 };
+    let gameOver = false;
+    let roomCode = null;
+    let isHost = false;
+    let gameMode = "online"; // Biến toàn cục để phân biệt chế độ
+
+    function signUp() {
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+      const username = document.getElementById("username").value;
+
+      auth.createUserWithEmailAndPassword(email, password)
+        .then((userCredential) => {
+          const user = userCredential.user;
+          return user.updateProfile({ displayName: username }).then(() => {
+            return database.ref("users/" + user.uid).set({
+              email: user.email,
+              name: username
+            });
+          });
+        })
+        .then(() => {
+          document.getElementById("auth-status").innerText = "✅ Đăng ký thành công!";
+        })
+        .catch(error => {
+          document.getElementById("auth-status").innerText = "❌ " + error.message;
+        });
+    }
+
+    function signIn() {
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+      auth.signInWithEmailAndPassword(email, password)
+        .then(() => {
+          document.getElementById("auth-status").innerText = "✅ Đăng nhập thành công!";
+        })
+        .catch(error => {
+          document.getElementById("auth-status").innerText = "❌ " + error.message;
+        });
+    }
+
+    function signOut() {
+      auth.signOut();
+    }
+
+    auth.onAuthStateChanged(user => {
+      if (user) {
+        const userId = user.uid;
+        const userRef = database.ref("users/" + userId);
+        userRef.once("value").then(snapshot => {
+          const userInfo = snapshot.val();
+          document.getElementById("player-name").innerText = userInfo && userInfo.name ? userInfo.name : "Không có tên";
+        });
+
+        document.getElementById("auth-container").style.display = "none";
+        document.getElementById("game-container").style.display = "block";
+        document.getElementById("player").innerText = user.displayName || "Ẩn danh";
+        document.getElementById("room-container").style.display = "block";
+      } else {
+        document.getElementById("auth-container").style.display = "block";
+        document.getElementById("game-container").style.display = "none";
+        document.getElementById("room-container").style.display = "none";
+      }
+    });
+
+    function initGame() {
+      const board = document.getElementById("board");
+      board.innerHTML = "";
+      document.getElementById("win-message").style.display = "none";
+
+      for (let i = 0; i < 15; i++) {
+        const row = document.createElement("div");
+        row.classList.add("row");
+        for (let j = 0; j < 15; j++) {
+          const cell = document.createElement("div");
+          cell.classList.add("cell");
+          cell.dataset.row = i;
+          cell.dataset.col = j;
+          cell.addEventListener("click", () => handleCellClick(cell, i, j));
+          row.appendChild(cell);
+        }
+        board.appendChild(row);
+      }
+    }
+
+    function setupRoomListener() {
+      if (roomCode) {
+        const roomRef = firebase.database().ref("rooms/" + roomCode);
+        roomRef.on("value", snapshot => {
+          const roomData = snapshot.val();
+          if (roomData) {
+            boardState = roomData.boardState || Array(15).fill().map(() => Array(15).fill(""));
+            currentPlayer = roomData.currentPlayer || "X";
+            winCounts = roomData.winCounts || { X: 0, O: 0 };
+            updateBoardUI();
+            updateScoreDisplay();
+
+            if (roomData.gameStatus === "started") {
+              document.getElementById("room-container").style.display = "none";
+              document.getElementById("game-container").style.display = "block";
+            }
+
+            if (roomData.winner) {
+              document.getElementById("win-message").innerText = `${roomData.winner} chiến thắng rực lửa! 🎇`;
+              document.getElementById("win-message").style.display = "block";
+              highlightWinningCellsFromFirebase(roomData.winningCells);
+
+              if (winCounts[roomData.winner] >= 2) {
+                gameOver = true;
+                document.getElementById("win-message").innerText = `${roomData.winner} là người chiến thắng chung cuộc! 🎉`;
+                document.getElementById("clap-message").style.display = "block";
+                setTimeout(() => alert(`${roomData.winner} chiến thắng chung cuộc!`), 1000);
+              }
+            } else if (roomData.isDraw) {
+              document.getElementById("win-message").innerText = "Hòa! Không ai thắng! 🤝";
+              document.getElementById("win-message").style.display = "block";
+              gameOver = true;
+            }
+          }
+        });
+      }
+    }
+
+    function handleCellClick(cell, row, col) {
+      if (gameOver || boardState[row][col]) return;
+
+      if (gameMode === "bot") return; // Bỏ qua logic online trong chế độ bot
+
+      const roomRef = firebase.database().ref("rooms/" + roomCode);
+      roomRef.once("value").then(snapshot => {
+        const roomData = snapshot.val();
+        if (roomData.currentPlayer !== (isHost ? "X" : "O")) {
+          alert("Chưa đến lượt của bạn!");
+          return;
+        }
+
+        cell.classList.add(currentPlayer);
+        cell.textContent = currentPlayer;
+        boardState[row][col] = currentPlayer;
+
+        let updateData = {
+          boardState: boardState,
+          currentPlayer: currentPlayer === "X" ? "O" : "X",
+          winCounts: roomData.winCounts || { X: 0, O: 0 }
+        };
+
+        if (checkWin(row, col)) {
+          const winningCells = getWinningCells(row, col);
+          updateData.winner = currentPlayer;
+          updateData.winningCells = winningCells;
+          updateData.winCounts[currentPlayer] = (updateData.winCounts[currentPlayer] || 0) + 1;
+        } else if (isBoardFull()) {
+          updateData.isDraw = true;
+        }
+
+        roomRef.update(updateData);
+      });
+    }
+
+    function checkWin(row, col) {
+      const directions = [
+        { dx: 0, dy: 1 },
+        { dx: 1, dy: 0 },
+        { dx: 1, dy: 1 },
+        { dx: -1, dy: 1 }
+      ];
+
+      for (let dir of directions) {
+        let count = 1;
+        let x = row + dir.dx;
+        let y = col + dir.dy;
+        while (x >= 0 && x < 15 && y >= 0 && y < 15 && boardState[x][y] === currentPlayer) {
+          count++;
+          x += dir.dx;
+          y += dir.dy;
+        }
+        x = row - dir.dx;
+        y = col - dir.dy;
+        while (x >= 0 && x < 15 && y >= 0 && y < 15 && boardState[x][y] === currentPlayer) {
+          count++;
+          x -= dir.dx;
+          y -= dir.dy;
+        }
+        if (count === 5) return true;
+      }
+      return false;
+    }
+
+    function getWinningCells(row, col) {
+      const directions = [
+        { dx: 0, dy: 1 },
+        { dx: 1, dy: 0 },
+        { dx: 1, dy: 1 },
+        { dx: -1, dy: 1 }
+      ];
+
+      for (let dir of directions) {
+        let count = 1;
+        let winningCells = [[row, col]];
+        let x = row + dir.dx;
+        let y = col + dir.dy;
+        while (x >= 0 && x < 15 && y >= 0 && y < 15 && boardState[x][y] === currentPlayer) {
+          winningCells.push([x, y]);
+          count++;
+          x += dir.dx;
+          y += dir.dy;
+        }
+        x = row - dir.dx;
+        y = col - dir.dy;
+        while (x >= 0 && x < 15 && y >= 0 && y < 15 && boardState[x][y] === currentPlayer) {
+          winningCells.push([x, y]);
+          count++;
+          x -= dir.dx;
+          y -= dir.dy;
+        }
+        if (count === 5) return winningCells;
+      }
+      return [];
+    }
+
+    function highlightWinningCellsFromFirebase(winningCells) {
+      winningCells.forEach(([r, c]) => {
+        const cell = document.querySelector(`[data-row="${r}"][data-col="${c}"]`);
+        if (cell) cell.style.backgroundColor = "red";
+      });
+    }
+
+    function updateScoreDisplay() {
+      document.getElementById("score").innerText = `X - ${winCounts.X} | O - ${winCounts.O}`;
+    }
+
+    function isBoardFull() {
+      return boardState.every(row => row.every(cell => cell !== ""));
+    }
+
+    function updateBoardUI() {
+      const cells = document.querySelectorAll(".cell");
+      cells.forEach(cell => {
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        cell.textContent = boardState[row][col] || "";
+        cell.classList.remove("X", "O");
+        if (boardState[row][col]) {
+          cell.classList.add(boardState[row][col]);
+        }
+      });
+      document.getElementById("player").innerText = currentPlayer;
+    }
+
+    function resetGame() {
+      if (gameMode === "bot") {
+        boardState = Array(15).fill().map(() => Array(15).fill(""));
+        currentPlayer = "O"; // Bot đi trước
+        gameOver = false;
+        initGame();
+        updateBoardUI();
+        setupBotEvents(); // Gắn lại sự kiện cho bot
+        setTimeout(() => {
+          botMove();
+          currentPlayer = "X"; // Chuyển lượt cho người chơi
+        }, 500);
+        document.getElementById("win-message").style.display = "none";
+        document.getElementById("clap-message").style.display = "none";
+      } else {
+        const roomRef = firebase.database().ref("rooms/" + roomCode);
+        boardState = Array(15).fill().map(() => Array(15).fill(""));
+        currentPlayer = "X";
+        gameOver = false;
+        roomRef.update({
+          boardState: boardState,
+          currentPlayer: currentPlayer,
+          gameStatus: "started",
+          winner: null,
+          winningCells: null,
+          isDraw: null,
+          winCounts: { X: 0, O: 0 }
+        });
+        initGame();
+        document.getElementById("clap-message").style.display = "none";
+        updateScoreDisplay();
+      }
+    }
+
+    function createRoom() {
+      const user = firebase.auth().currentUser;
+      const roomCodeGenerated = Math.floor(1000 + Math.random() * 9000);
+      const roomRef = firebase.database().ref("rooms/" + roomCodeGenerated);
+
+      roomRef.set({
+        status: "waiting",
+        playerX: { uid: user.uid, name: user.displayName || "Chủ phòng" },
+        playerO: null,
+        boardState: Array(15).fill().map(() => Array(15).fill("")),
+        currentPlayer: "X",
+        winCounts: { X: 0, O: 0 }
+      }).then(() => {
+        roomCode = roomCodeGenerated;
+        isHost = true;
+        document.getElementById("room-code-display").innerText = "Mã phòng: " + roomCode;
+        document.getElementById("waiting-player").innerText = "⏳ Đang chờ người chơi khác...";
+        initGame();
+        setupRoomListener();
+
+        roomRef.on("value", snapshot => {
+          const roomData = snapshot.val();
+          if (roomData && roomData.playerO) {
+            document.getElementById("waiting-player").innerText = `✅ ${roomData.playerO.name} đã tham gia!`;
+            document.getElementById("start-game-btn").style.display = "inline-block";
+          }
+        });
+      });
+    }
+
+    function joinRoom() {
+      const user = firebase.auth().currentUser;
+      const code = document.getElementById("join-room-code").value;
+      const roomRef = firebase.database().ref("rooms/" + code);
+
+      roomRef.once("value").then(snapshot => {
+        const roomData = snapshot.val();
+        if (roomData && !roomData.playerO) {
+          roomRef.update({
+            playerO: { uid: user.uid, name: user.displayName || "Khách" },
+            status: "ready"
+          });
+          roomCode = code;
+          isHost = false;
+          document.getElementById("room-code-display").innerText = "Tham gia phòng: " + roomCode;
+          document.getElementById("waiting-player").innerText = "✅ Đã tham gia phòng!";
+          initGame();
+          setupRoomListener();
+        } else {
+          alert("❌ Mã phòng không tồn tại hoặc đã đầy!");
+        }
+      });
+    }
+
+    function startGame() {
+      document.getElementById("dice-container").style.display = "flex";
+
+      let dice1 = Math.floor(Math.random() * 6) + 1;
+      let dice2 = Math.floor(Math.random() * 6) + 1;
+
+      document.getElementById("dice1").textContent = dice1;
+      document.getElementById("dice2").textContent = dice2;
+
+      const firstPlayer = (dice1 + dice2) % 2 === 0 ? "O" : "X";
+      const roomRef = firebase.database().ref("rooms/" + roomCode);
+      roomRef.update({
+        dice: { dice1, dice2 },
+        gameStatus: "started",
+        currentPlayer: firstPlayer,
+        boardState: Array(15).fill().map(() => Array(15).fill("")),
+        winner: null,
+        winningCells: null,
+        isDraw: null,
+        winCounts: { X: 0, O: 0 }
+      });
+
+      setTimeout(() => {
+        document.getElementById("dice-container").classList.add("dice-fall");
+        document.getElementById("win-message").innerText = `Số xúc xắc: ${dice1 + dice2}. ${firstPlayer} đi trước!`;
+        document.getElementById("win-message").style.display = "block";
+
+        setTimeout(() => {
+          document.getElementById("dice-container").style.display = "none";
+          document.getElementById("win-message").style.display = "none";
+        }, 1000);
+      }, 2500);
+
+      document.getElementById("start-game-btn").style.display = "none";
+    }
+
+    // Thêm phần bot
+    document.getElementById("play-vs-bot-btn").addEventListener("click", () => {
+      document.getElementById("room-container").style.display = "none";
+      document.getElementById("game-container").style.display = "block";
+      startVsBotGame();
+    });
+
+    function startVsBotGame() {
+      gameMode = "bot";
+      boardState = Array(15).fill().map(() => Array(15).fill(""));
+      currentPlayer = "O"; // Bot đi trước
+      gameOver = false;
+
+      initGame();
+      updateBoardUI();
+      setupBotEvents(); // Gắn sự kiện cho bot
+      setTimeout(() => {
+        botMove();
+        currentPlayer = "X"; // Chuyển lượt cho người chơi
+      }, 500);
+    }
+
+    function setupBotEvents() {
+      const cells = document.querySelectorAll(".cell");
+      cells.forEach(cell => {
+        cell.onclick = () => {
+          const row = parseInt(cell.dataset.row);
+          const col = parseInt(cell.dataset.col);
+
+          if (gameMode === "bot" && boardState[row][col] === "" && currentPlayer === "X" && !gameOver) {
+            boardState[row][col] = "X";
+            cell.textContent = "X";
+            cell.classList.add("X");
+            updateBoardUI();
+
+            if (checkWin(row, col)) {
+              document.getElementById("win-message").innerText = "Bạn thắng!";
+              document.getElementById("win-message").style.display = "block";
+              gameOver = true;
+              return;
+            }
+
+            if (isBoardFull()) {
+              document.getElementById("win-message").innerText = "Hòa!";
+              document.getElementById("win-message").style.display = "block";
+              gameOver = true;
+              return;
+            }
+
+            currentPlayer = "O";
+            setTimeout(() => {
+              botMove();
+              currentPlayer = "X"; // Chuyển lại lượt cho người chơi
+            }, 500);
+          }
+        };
+      });
+    }
+
+    function botMove() {
+      if (gameOver) return;
+
+      let emptyCells = [];
+      for (let r = 0; r < 15; r++) {
+        for (let c = 0; c < 15; c++) {
+          if (boardState[r][c] === "") {
+            emptyCells.push([r, c]);
+          }
+        }
+      }
+
+      if (emptyCells.length === 0) return;
+
+      function countInDirection(r, c, dr, dc, player) {
+        let count = 0;
+        let x = r + dr;
+        let y = c + dc;
+        while (x >= 0 && x < 15 && y >= 0 && y < 15 && boardState[x][y] === player) {
+          count++;
+          x += dr;
+          y += dc;
+        }
+        return count;
+      }
+
+      const directions = [
+        { dx: 0, dy: 1 },
+        { dx: 1, dy: 0 },
+        { dx: 1, dy: 1 },
+        { dx: -1, dy: 1 },
+      ];
+
+      for (let [r, c] of emptyCells) {
+        boardState[r][c] = "X";
+        if (checkWin(r, c)) {
+          boardState[r][c] = "O";
+          const cell = document.querySelector(`[data-row="${r}"][data-col="${c}"]`);
+          cell.textContent = "O";
+          cell.classList.add("O");
+          updateBoardUI();
+          if (checkWin(r, c)) {
+            document.getElementById("win-message").innerText = "Bot thắng!";
+            document.getElementById("win-message").style.display = "block";
+            gameOver = true;
+          }
+          return;
+        }
+        boardState[r][c] = "";
+      }
+
+      for (let [r, c] of emptyCells) {
+        boardState[r][c] = "O";
+        if (checkWin(r, c)) {
+          const cell = document.querySelector(`[data-row="${r}"][data-col="${c}"]`);
+          cell.textContent = "O";
+          cell.classList.add("O");
+          updateBoardUI();
+          document.getElementById("win-message").innerText = "Bot thắng!";
+          document.getElementById("win-message").style.display = "block";
+          gameOver = true;
+          return;
+        }
+        boardState[r][c] = "";
+      }
+
+      for (let [r, c] of emptyCells) {
+        let botScore = 0;
+        let playerScore = 0;
+        for (let dir of directions) {
+          const forwardBot = countInDirection(r, c, dir.dx, dir.dy, "O");
+          const backwardBot = countInDirection(r, c, -dir.dx, -dir.dy, "O");
+          const forwardPlayer = countInDirection(r, c, dir.dx, dir.dy, "X");
+          const backwardPlayer = countInDirection(r, c, -dir.dx, -dir.dy, "X");
+
+          if (forwardBot + backwardBot >= 2) botScore += 10;
+          if (forwardPlayer + backwardPlayer >= 2) playerScore += 5;
+        }
+        if (botScore > 0 || playerScore > 0) {
+          boardState[r][c] = "O";
+          const cell = document.querySelector(`[data-row="${r}"][data-col="${c}"]`);
+          cell.textContent = "O";
+          cell.classList.add("O");
+          updateBoardUI();
+          return;
+        }
+      }
+
+      const [r, c] = emptyCells[Math.floor(Math.random() * emptyCells.length)];
+      boardState[r][c] = "O";
+      const cell = document.querySelector(`[data-row="${r}"][data-col="${c}"]`);
+      cell.textContent = "O";
+      cell.classList.add("O");
+      updateBoardUI();
+    }
+
+    function exitToRoomSelection() {
+      document.getElementById("game-container").style.display = "none";
+      document.getElementById("room-container").style.display = "block";
+      boardState = Array(15).fill().map(() => Array(15).fill(""));
+      gameOver = false;
+      currentPlayer = "X";
+      gameMode = "online"; // Quay lại chế độ online
+      document.getElementById("win-message").style.display = "none";
+      document.getElementById("clap-message").style.display = "none";
+    }
+  </script>
+</body>
+</html>
